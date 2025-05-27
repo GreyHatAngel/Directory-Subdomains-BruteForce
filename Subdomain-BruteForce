@@ -1,0 +1,607 @@
+#!/bin/bash
+
+# Proxy rotation subdomain bruteforce
+# Usage: ./subdomain_bruteforce.sh domain.com wordlist.txt [options]
+
+# Culori pentru output frumos
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+PURPLE='\033[0;35m'
+ORANGE='\033[0;33m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Configurări
+MAX_THREADS=5
+DELAY=2
+TIMEOUT=5
+EXTENSIONS=""
+FILTER_CODES=""
+FILTER_SIZE=""
+USE_PROXY=false
+MAX_RETRIES=2
+SHOW_RETRY_MESSAGES=false  # Dezactivează mesajele de retry
+
+# Variabile pentru statistici și logging
+START_TIME=""
+END_TIME=""
+TOTAL_REQUESTS=0
+FOUND_200=0
+FOUND_301=0
+FOUND_403=0
+FOUND_404=0
+FOUND_500=0
+FOUND_OTHER=0
+LOG_FILE=""
+TARGET_DOMAIN=""
+WORDLIST=""
+STATS_FILE=""
+
+# ===============================================
+# PROXY LIST - Add proxies
+# Format: TYPE:IP:PORT:USERNAME:PASSWORD
+# ===============================================
+PROXY_LIST=(
+"protocol:ip:port:username:password"
+)
+
+# Array cu user agents random
+USER_AGENTS=(
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.63 Safari/537.36"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36"
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:90.0) Gecko/20100101 Firefox/90.0"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:91.0) Gecko/20100101 Firefox/91.0"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:89.0) Gecko/20100101 Firefox/89.0"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:90.0) Gecko/20100101 Firefox/90.0"
+    "Mozilla/5.0 (X11; Linux x86_64; rv:89.0) Gecko/20100101 Firefox/89.0"
+    "Mozilla/5.0 (X11; Linux x86_64; rv:90.0) Gecko/20100101 Firefox/90.0"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36 Edg/91.0.864.59"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36 Edg/92.0.902.55"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Safari/605.1.15"
+)
+
+# Check dependencies
+check_dependencies() {
+    local missing_deps=()
+    
+    command -v curl >/dev/null 2>&1 || missing_deps+=("curl")
+    command -v wc >/dev/null 2>&1 || missing_deps+=("wc")
+    command -v date >/dev/null 2>&1 || missing_deps+=("date")
+    
+    if [ ${#missing_deps[@]} -ne 0 ]; then
+        echo -e "${RED}❌ Missing required dependencies: ${missing_deps[*]}${NC}"
+        echo -e "${YELLOW}Please install them before running this script.${NC}"
+        exit 1
+    fi
+}
+
+# Banner frumos
+show_banner() {
+    echo -e "${PURPLE}"
+    echo "╔══════════════════════════════════════════════╗"
+    echo "║     HTTP Subdomain Bruteforce v2.0          ║"
+    echo "║        With Built-in Proxy Rotation         ║"
+    echo "║            Threads: $MAX_THREADS | Delay: ${DELAY}s           ║"
+    echo "╚══════════════════════════════════════════════╝"
+    echo -e "${NC}"
+}
+
+# Verifică argumentele
+check_args() {
+    if [ $# -lt 2 ]; then
+        echo -e "${RED}Usage: $0 <domain> <wordlist> [options]${NC}"
+        echo -e "${YELLOW}Options:${NC}"
+        echo -e "  ${BLUE}-fc <codes>${NC}       Filter out HTTP codes: -fc 404,403"
+        echo -e "  ${BLUE}-fs <size>${NC}        Filter out file size: -fs 0"
+        echo -e "  ${BLUE}-p, --proxy${NC}       Use built-in proxy rotation"
+        echo ""
+        echo -e "${YELLOW}Examples:${NC}"
+        echo -e "  $0 example.com /usr/share/wordlists/subdomains/sublist3r.txt"
+        echo -e "  $0 example.com wordlist.txt -fc 404,403 -p"
+        echo -e "  $0 example.com wordlist.txt -fs 0 -fc 404 --proxy"
+        exit 1
+    fi
+    
+    TARGET_DOMAIN=$1
+    WORDLIST=$2
+    shift 2
+    
+    # Parse argumentele opționale
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -fc|--filter-code)
+                FILTER_CODES="$2"
+                shift 2
+                ;;
+            -fs|--filter-size)
+                FILTER_SIZE="$2"
+                shift 2
+                ;;
+            -p|--proxy)
+                USE_PROXY=true
+                shift
+                ;;
+            *)
+                echo -e "${RED}Unknown option: $1${NC}"
+                exit 1
+                ;;
+        esac
+    done
+    
+    # Verifică dacă domeniul are protocol și îl elimină
+    TARGET_DOMAIN=$(echo "$TARGET_DOMAIN" | sed 's|https\?://||' | sed 's|/.*||')
+    
+    if [ ! -f "$WORDLIST" ]; then
+        echo -e "${RED}❌ Wordlist file not found: $WORDLIST${NC}"
+        exit 1
+    fi
+    
+    # Creează numele fișierului de log
+    local start_date=$(date '+%d-%m-%Y_%H-%M')
+    LOG_FILE="subdomain-bruteforce-${TARGET_DOMAIN}-${start_date}.txt"
+    STATS_FILE="/tmp/.bruteforce_stats_$$"
+    
+    # Inițializează fișierul de statistici
+    echo "0 0 0 0 0 0 0" > "$STATS_FILE"
+    
+    echo -e "${BLUE}🎯 Target Domain: $TARGET_DOMAIN${NC}"
+    echo -e "${BLUE}📁 Wordlist: $WORDLIST${NC}"
+    echo -e "${BLUE}📄 Log File: $LOG_FILE${NC}"
+    echo -e "${BLUE}🧵 Threads: $MAX_THREADS${NC}"
+    echo -e "${BLUE}⏱️  Delay: ${DELAY}s${NC}"
+    echo -e "${BLUE}🔄 Retries: ${MAX_RETRIES} attempts per request${NC}"
+    
+    if [ "$USE_PROXY" = true ]; then
+        echo -e "${BLUE}🔄 Proxy rotation: ${GREEN}ENABLED${NC} (${#PROXY_LIST[@]} proxies)"
+        echo -e "${YELLOW}📝 Note: Failed requests with proxies are retried silently${NC}"
+    else
+        echo -e "${BLUE}🔄 Proxy rotation: ${RED}DISABLED${NC}"
+    fi
+    
+    if [ -n "$FILTER_CODES" ]; then
+        echo -e "${BLUE}🚫 Filter codes: $FILTER_CODES${NC}"
+    fi
+    
+    if [ -n "$FILTER_SIZE" ]; then
+        echo -e "${BLUE}📏 Filter size: $FILTER_SIZE bytes${NC}"
+    fi
+    
+    echo ""
+}
+
+# Funcție pentru logging în fișier
+log_to_file() {
+    local message="$1"
+    echo "$message" >> "$LOG_FILE"
+}
+
+# Funcție pentru logging cu afișare și salvare
+log_and_display() {
+    local message="$1"
+    echo -e "$message"
+    # Elimină codurile de culoare pentru fișier
+    local clean_message=$(echo -e "$message" | sed 's/\x1b\[[0-9;]*m//g')
+    log_to_file "$clean_message"
+}
+
+# Funcție pentru a alege user agent random
+get_random_user_agent() {
+    echo "${USER_AGENTS[$RANDOM % ${#USER_AGENTS[@]}]}"
+}
+
+# Funcție pentru a alege proxy random
+get_random_proxy() {
+    if [ "$USE_PROXY" = false ]; then
+        echo ""
+        return
+    fi
+    
+    local proxy_info="${PROXY_LIST[$RANDOM % ${#PROXY_LIST[@]}]}"
+    echo "$proxy_info"
+}
+
+# Funcție pentru parsarea proxy info
+parse_proxy() {
+    local proxy_info=$1
+    if [ -z "$proxy_info" ]; then
+        echo ""
+        return
+    fi
+    
+    local type=$(echo "$proxy_info" | cut -d':' -f1)
+    local ip=$(echo "$proxy_info" | cut -d':' -f2)
+    local port=$(echo "$proxy_info" | cut -d':' -f3)
+    local username=$(echo "$proxy_info" | cut -d':' -f4)
+    local password=$(echo "$proxy_info" | cut -d':' -f5)
+    
+    if [ -n "$username" ] && [ -n "$password" ]; then
+        echo "--proxy $type://$username:$password@$ip:$port"
+    else
+        echo "--proxy $type://$ip:$port"
+    fi
+}
+
+# Funcție pentru verificarea filtrelor
+should_filter() {
+    local http_code=$1
+    local file_size=$2
+    
+    # Verifică filtrul pentru coduri HTTP
+    if [ -n "$FILTER_CODES" ]; then
+        IFS=',' read -ra CODES <<< "$FILTER_CODES"
+        for code in "${CODES[@]}"; do
+            if [ "$http_code" = "$code" ]; then
+                return 0  # Filtrează (nu afișa)
+            fi
+        done
+    fi
+    
+    # Verifică filtrul pentru mărime
+    if [ -n "$FILTER_SIZE" ] && [ "$file_size" = "$FILTER_SIZE" ]; then
+        return 0  # Filtrează (nu afișa)
+    fi
+    
+    return 1  # Nu filtra (afișează)
+}
+
+# Funcție pentru actualizarea statisticilor thread-safe
+update_stats() {
+    local stat_type=$1
+    (
+        flock -x 200
+        read total s200 s301 s403 s404 s500 sother < "$STATS_FILE"
+        ((total++))
+        case $stat_type in
+            "200") ((s200++)) ;;
+            "301") ((s301++)) ;;
+            "403") ((s403++)) ;;
+            "404") ((s404++)) ;;
+            "500") ((s500++)) ;;
+            "other") ((sother++)) ;;
+        esac
+        echo "$total $s200 $s301 $s403 $s404 $s500 $sother" > "$STATS_FILE"
+    ) 200>"$STATS_FILE.lock"
+}
+
+# Funcția pentru testarea unui subdomeniu
+test_subdomain() {
+    local subdomain=$1
+    local base_domain=$2
+    
+    # Alege user agent random pentru această sesiune
+    local user_agent=$(get_random_user_agent)
+    
+    # Lista de URL-uri de testat (HTTP și HTTPS)
+    local protocols=("http" "https")
+    
+    # Testează fiecare protocol
+    for protocol in "${protocols[@]}"; do
+        # Construiește URL-ul complet
+        local full_url="${protocol}://${subdomain}.${base_domain}"
+        
+        local retry_count=0
+        local request_success=false
+        local last_response=""
+        local last_proxy_ip=""
+        
+        # Retry loop pentru request-uri eșuate
+        while [ $retry_count -lt $MAX_RETRIES ] && [ "$request_success" = false ]; do
+            # Selectează proxy random
+            local proxy_info=$(get_random_proxy)
+            local proxy_param=$(parse_proxy "$proxy_info")
+            local proxy_ip=""
+            
+            if [ -n "$proxy_info" ]; then
+                proxy_ip=$(echo "$proxy_info" | cut -d':' -f2)
+            else
+                proxy_ip="direct"
+            fi
+            
+            # Obține timestamp
+            local timestamp=$(date '+%d/%m/%Y - %H:%M:%S')
+            local milliseconds=$(date +%3N)
+            local full_timestamp="${timestamp}:${milliseconds}"
+            
+            # Face request-ul către subdomeniu
+            local response=""
+            if [ -n "$proxy_param" ]; then
+                response=$(curl -k -s -o /dev/null -w "%{http_code}|%{time_total}|%{size_download}" \
+                    --connect-timeout $TIMEOUT \
+                    --max-time $((TIMEOUT + 5)) \
+                    --user-agent "$user_agent" \
+                    -L $proxy_param "$full_url" 2>/dev/null)
+            else
+                response=$(curl -k -s -o /dev/null -w "%{http_code}|%{time_total}|%{size_download}" \
+                    --connect-timeout $TIMEOUT \
+                    --max-time $((TIMEOUT + 5)) \
+                    --user-agent "$user_agent" \
+                    -L "$full_url" 2>/dev/null)
+            fi
+            
+            if [ $? -eq 0 ] && [ -n "$response" ]; then
+                # Request a reușit
+                request_success=true
+                last_response="$response"
+                last_proxy_ip="$proxy_ip"
+                
+                http_code=$(echo $response | cut -d'|' -f1)
+                time_total=$(echo $response | cut -d'|' -f2)
+                size_download=$(echo $response | cut -d'|' -f3)
+                
+                # Format size pentru afișare
+                if [ "$size_download" -gt 0 ]; then
+                    if [ "$size_download" -gt 1048576 ]; then  # > 1MB
+                        size_mb=$((size_download / 1048576))
+                        size_display="${size_mb}MB"
+                    elif [ "$size_download" -gt 1024 ]; then  # > 1KB
+                        size_kb=$((size_download / 1024))
+                        size_display="${size_kb}KB"
+                    else
+                        size_display="${size_download}B"
+                    fi
+                else
+                    size_display="0B"
+                fi
+                
+                # Incrementează contoarele pentru statistici ÎNTOTDEAUNA
+                update_stats "total"
+                
+                # Actualizează statisticile ÎNTOTDEAUNA (înainte de filtrare)
+                case $http_code in
+                    200|201|204) update_stats "200" ;;
+                    301|302|307|308) update_stats "301" ;;
+                    403) update_stats "403" ;;
+                    404) update_stats "404" ;;
+                    500|502|503|504) update_stats "500" ;;
+                    400|401|405|429|000) update_stats "other" ;;
+                    *) update_stats "other" ;;
+                esac
+                
+                # Verifică dacă trebuie să filtreze - DOAR pentru afișare
+                if should_filter "$http_code" "$size_download"; then
+                    # Doar sări afișarea, dar statisticile au fost deja actualizate
+                    continue 2  # Sare la următorul protocol
+                fi
+                
+                # Afișează rezultatul cu toate detaliile
+                case $http_code in
+                    200|201|204)
+                        log_and_display "${GREEN}[$full_timestamp] $full_url (Status: $http_code) [Size: ${size_display}] [Proxy: ${proxy_ip}] [Time: ${time_total}s]${NC}"
+                        ;;
+                    301|302|307|308)
+                        log_and_display "${YELLOW}[$full_timestamp] $full_url (Status: $http_code - Redirect) [Size: ${size_display}] [Proxy: ${proxy_ip}] [Time: ${time_total}s]${NC}"
+                        ;;
+                    400)
+                        log_and_display "${ORANGE}[$full_timestamp] $full_url (Status: 400 - Bad Request) [Size: ${size_display}] [Proxy: ${proxy_ip}] [Time: ${time_total}s]${NC}"
+                        ;;
+                    401)
+                        log_and_display "${PURPLE}[$full_timestamp] $full_url (Status: 401 - Unauthorized) [Size: ${size_display}] [Proxy: ${proxy_ip}] [Time: ${time_total}s]${NC}"
+                        ;;
+                    403)
+                        log_and_display "${RED}[$full_timestamp] $full_url (Status: 403 - Forbidden) [Size: ${size_display}] [Proxy: ${proxy_ip}] [Time: ${time_total}s]${NC}"
+                        ;;
+                    404)
+                        log_and_display "${BLUE}[$full_timestamp] $full_url (Status: 404 - Not Found) [Size: ${size_display}] [Proxy: ${proxy_ip}] [Time: ${time_total}s]${NC}"
+                        ;;
+                    405)
+                        log_and_display "${ORANGE}[$full_timestamp] $full_url (Status: 405 - Method Not Allowed) [Size: ${size_display}] [Proxy: ${proxy_ip}] [Time: ${time_total}s]${NC}"
+                        ;;
+                    429)
+                        log_and_display "${PURPLE}[$full_timestamp] $full_url (Status: 429 - Too Many Requests) [Size: ${size_display}] [Proxy: ${proxy_ip}] [Time: ${time_total}s]${NC}"
+                        ;;
+                    500|502|503|504)
+                        log_and_display "${RED}[$full_timestamp] $full_url (Status: $http_code - Server Error) [Size: ${size_display}] [Proxy: ${proxy_ip}] [Time: ${time_total}s]${NC}"
+                        ;;
+                    000)
+                        log_and_display "${RED}[$full_timestamp] $full_url (Status: Connection Failed) [Proxy: ${proxy_ip}]${NC}"
+                        ;;
+                    *)
+                        log_and_display "${CYAN}[$full_timestamp] $full_url (Status: ${http_code}) [Size: ${size_display}] [Proxy: ${proxy_ip}] [Time: ${time_total}s]${NC}"
+                        ;;
+                esac
+            else
+                # Curl a eșuat, încearcă cu alt proxy
+                ((retry_count++))
+                if [ $retry_count -lt $MAX_RETRIES ]; then
+                    # Log retry attempt doar dacă e activat
+                    if [ "$SHOW_RETRY_MESSAGES" = true ]; then
+                        echo -e "${YELLOW}⚠️  Retry $retry_count/$MAX_RETRIES for $full_url (failed proxy: $proxy_ip)${NC}" >&2
+                    fi
+                    sleep 0.5  # Mică pauză înainte de retry
+                fi
+                last_proxy_ip="$proxy_ip"
+            fi
+        done
+        
+        # Dacă toate încercările au eșuat
+        if [ "$request_success" = false ]; then
+            update_stats "total"
+            update_stats "other"
+            # Nu afișa mesajul de eșec decât dacă nu folosim proxy-uri
+            # sau dacă există o șansă reală că subdomenul există
+            if [ "$USE_PROXY" = false ]; then
+                local timestamp=$(date '+%d/%m/%Y - %H:%M:%S')
+                local milliseconds=$(date +%3N)
+                local full_timestamp="${timestamp}:${milliseconds}"
+                log_and_display "${RED}[$full_timestamp] $full_url (Status: Request Failed) [No proxy]${NC}"
+            fi
+            # Pentru proxy-uri, doar incrementăm statisticile silențios
+        fi
+        
+        # Small delay between protocols
+        sleep 0.1
+    done
+}
+
+# Funcția principală de bruteforce
+bruteforce_subdomains() {
+    local base_domain=$1
+    local wordlist=$2
+    
+    # Citește wordlist-ul
+    local total_words=$(wc -l < "$wordlist")
+    local current=0
+    
+    echo -e "${CYAN}🚀 Starting subdomain bruteforce on $total_words subdomains...${NC}"
+    echo -e "${CYAN}📌 Testing both HTTP and HTTPS for each subdomain${NC}"
+    log_to_file "🚀 Starting subdomain bruteforce on $total_words subdomains..."
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    
+    # Control numărul de job-uri paralele
+    while IFS= read -r subdomain; do
+        # Skip empty lines and comments
+        [[ -z "$subdomain" || "$subdomain" =~ ^# ]] && continue
+        
+        # Curăță subdomeniul de spații
+        subdomain=$(echo "$subdomain" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        
+        # Skip dacă e gol după curățare
+        [[ -z "$subdomain" ]] && continue
+        
+        # Așteaptă dacă avem prea multe job-uri active
+        while [ $(jobs -r | wc -l) -ge $MAX_THREADS ]; do
+            sleep 0.1
+        done
+        
+        # Lansează job-ul în background
+        test_subdomain "$subdomain" "$base_domain" &
+        
+        ((current++))
+        
+        # Progress indicator
+        if [ $((current % 50)) -eq 0 ]; then
+            echo -e "${BLUE}📊 Progress: $current/$total_words subdomains tested${NC}"
+        fi
+        
+        # Delay între lansări
+        sleep $DELAY
+        
+    done < "$wordlist"
+    
+    # Așteaptă să se termine toate job-urile
+    echo -e "${YELLOW}⏳ Waiting for remaining jobs to finish...${NC}"
+    wait
+}
+
+# Afișează statisticile finale
+show_results() {
+    END_TIME=$(date '+%d/%m/%Y - %H:%M:%S')
+    
+    # Citește statisticile finale din fișier
+    if [ -f "$STATS_FILE" ]; then
+        read TOTAL_REQUESTS FOUND_200 FOUND_301 FOUND_403 FOUND_404 FOUND_500 FOUND_OTHER < "$STATS_FILE"
+    fi
+    
+    local summary_header=""
+    local summary_content=""
+    
+    summary_header="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    summary_content="📊 SUBDOMAIN BRUTEFORCE SUMMARY"
+    
+    echo ""
+    echo "$summary_header"
+    echo -e "${PURPLE}$summary_content${NC}"
+    echo "$summary_header"
+    echo -e "${CYAN}🚀 Started:  ${START_TIME}${NC}"
+    echo -e "${CYAN}🏁 Finished: ${END_TIME}${NC}"
+    echo ""
+    echo -e "${BLUE}📈 RESULTS SUMMARY:${NC}"
+    echo -e "   ${GREEN}✅ Success (2xx):   $FOUND_200${NC}"
+    echo -e "   ${YELLOW}🔄 Redirects (3xx): $FOUND_301${NC}"
+    echo -e "   ${RED}🚫 Forbidden (403): $FOUND_403${NC}"
+    echo -e "   ${BLUE}❌ Not Found (404): $FOUND_404${NC}"
+    echo -e "   ${RED}💥 Server Err (5xx): $FOUND_500${NC}"
+    echo -e "   ${CYAN}❓ Other Responses:  $FOUND_OTHER${NC}"
+    echo ""
+    echo -e "${PURPLE}📊 Total Requests: ${TOTAL_REQUESTS}${NC}"
+    
+    # Calculează timpul total
+    if [ -n "$START_TIME" ] && [ -n "$END_TIME" ]; then
+        # Convertește timestamps în format epoch
+        local start_seconds=$(date -d "$START_TIME" +%s 2>/dev/null || date +%s)
+        local end_seconds=$(date -d "$END_TIME" +%s 2>/dev/null || date +%s)
+        
+        if [ "$end_seconds" -gt "$start_seconds" ]; then
+            local duration=$((end_seconds - start_seconds))
+            local hours=$((duration / 3600))
+            local minutes=$(((duration % 3600) / 60))
+            local seconds=$((duration % 60))
+            echo -e "${PURPLE}⏱️  Total Time: ${hours}h ${minutes}m ${seconds}s${NC}"
+        fi
+    fi
+    
+    echo "$summary_header"
+    echo -e "${GREEN}💾 Results saved to: ${LOG_FILE}${NC}"
+    echo "$summary_header"
+    
+    # Salvează summary-ul în fișier
+    {
+        echo ""
+        echo "$summary_header"
+        echo "$summary_content"
+        echo "$summary_header" 
+        echo "🚀 Started:  ${START_TIME}"
+        echo "🏁 Finished: ${END_TIME}"
+        echo ""
+        echo "📈 RESULTS SUMMARY:"
+        echo "   ✅ Success (2xx):   $FOUND_200"
+        echo "   🔄 Redirects (3xx): $FOUND_301"
+        echo "   🚫 Forbidden (403): $FOUND_403"
+        echo "   ❌ Not Found (404): $FOUND_404"
+        echo "   💥 Server Err (5xx): $FOUND_500"
+        echo "   ❓ Other Responses:  $FOUND_OTHER"
+        echo ""
+        echo "📊 Total Requests: ${TOTAL_REQUESTS}"
+    } >> "$LOG_FILE"
+}
+
+# Trap pentru cleanup la întrerupere
+cleanup() {
+    echo -e "\n${RED}🛑 Interrupted! Cleaning up...${NC}"
+    # Kill all background jobs
+    jobs -p | xargs -r kill 2>/dev/null
+    wait 2>/dev/null
+    show_results
+    # Cleanup stats file
+    rm -f "$STATS_FILE" "$STATS_FILE.lock" 2>/dev/null
+    exit 1
+}
+
+# Main execution
+main() {
+    # Set trap for interruption
+    trap cleanup INT TERM
+    
+    # Check dependencies first
+    check_dependencies
+    
+    # Show banner and check arguments
+    show_banner
+    check_args "$@"
+    
+    # Set start time
+    START_TIME=$(date '+%d/%m/%Y - %H:%M:%S')
+    
+    # Start bruteforcing
+    bruteforce_subdomains "$TARGET_DOMAIN" "$WORDLIST"
+    
+    # Show results
+    show_results
+    
+    # Cleanup stats files
+    rm -f "$STATS_FILE" "$STATS_FILE.lock" 2>/dev/null
+}
+
+# Run main function only if script is executed directly
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    main "$@"
+fi
