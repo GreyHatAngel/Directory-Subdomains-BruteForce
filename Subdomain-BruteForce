@@ -88,9 +88,9 @@ check_dependencies() {
 show_banner() {
     echo -e "${PURPLE}"
     echo "╔══════════════════════════════════════════════╗"
-    echo "║     HTTP Subdomain Bruteforce v2.0          ║"
-    echo "║        With Built-in Proxy Rotation         ║"
-    echo "║            Threads: $MAX_THREADS | Delay: ${DELAY}s           ║"
+    echo "║     HTTP Subdomain Bruteforce v2.0           ║"
+    echo "║        With Built-in Proxy Rotation          ║"
+    echo "║    Threads: $MAX_THREADS | Delay: ${DELAY}s  ║"
     echo "╚══════════════════════════════════════════════╝"
     echo -e "${NC}"
 }
