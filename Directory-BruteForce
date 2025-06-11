@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Proxy rotation directory brute-force
+# Script pentru HTTP directory bruteforce cu proxy rotation
 # Usage: ./directory_bruteforce.sh https://domain.com wordlist.txt [options]
 
 # Culori pentru output frumos
@@ -15,11 +15,13 @@ NC='\033[0m' # No Color
 
 # Configurări
 MAX_THREADS=5
-DELAY=2
+DELAY=5
 TIMEOUT=5
 EXTENSIONS=""
 FILTER_CODES=""
 FILTER_SIZE=""
+FILTER_KB=""
+FILTER_BYTES=""
 USE_PROXY=false
 MAX_RETRIES=2
 
@@ -40,11 +42,11 @@ WORDLIST=""
 STATS_FILE=""
 
 # ===============================================
-# PROXY LIST - Add proxies
+# PROXY LIST - Adaugă aici proxy-urile tale
 # Format: TYPE:IP:PORT:USERNAME:PASSWORD
 # ===============================================
 PROXY_LIST=(
-"protocol:ip:port:username:password"
+"protocol:ip:port:user:password"
 )
 
 # Array cu user agents random
@@ -88,9 +90,9 @@ check_dependencies() {
 show_banner() {
     echo -e "${PURPLE}"
     echo "╔══════════════════════════════════════════════╗"
-    echo "║     HTTP Directory Bruteforce v2.0           ║"
-    echo "║        With Built-in Proxy Rotation          ║"
-    echo "║    Threads: $MAX_THREADS | Delay: ${DELAY}s  ║"
+    echo "║     HTTP Directory Bruteforce v2.1          ║"
+    echo "║        With Enhanced Size Filtering         ║"
+    echo "║            Threads: $MAX_THREADS | Delay: ${DELAY}s           ║"
     echo "╚══════════════════════════════════════════════╝"
     echo -e "${NC}"
 }
@@ -102,13 +104,16 @@ check_args() {
         echo -e "${YELLOW}Options:${NC}"
         echo -e "  ${BLUE}-X <extensions>${NC}    Add extensions (comma separated): -X .php,.html,.txt"
         echo -e "  ${BLUE}-fc <codes>${NC}       Filter out HTTP codes: -fc 404,403"
-        echo -e "  ${BLUE}-fs <size>${NC}        Filter out file size: -fs 0"
+        echo -e "  ${BLUE}-fs <size>${NC}        Filter out file size (bytes): -fs 0"
+        echo -e "  ${BLUE}-fkb <size>${NC}       Filter out file size (kilobytes): -fkb 10"
+        echo -e "  ${BLUE}-fb <size>${NC}        Filter out file size (bytes, alias for -fs): -fb 0"
         echo -e "  ${BLUE}-p, --proxy${NC}       Use built-in proxy rotation"
         echo ""
         echo -e "${YELLOW}Examples:${NC}"
         echo -e "  $0 https://example.com /usr/share/wordlists/dirb/common.txt"
         echo -e "  $0 https://example.com wordlist.txt -X .php,.html -fc 404,403 -p"
-        echo -e "  $0 https://example.com wordlist.txt -X .txt,.bak -fs 0 -fc 404 --proxy"
+        echo -e "  $0 https://example.com wordlist.txt -X .txt,.bak -fkb 15 -fc 404 --proxy"
+        echo -e "  $0 https://example.com wordlist.txt -fb 0 -fkb 10 -fc 301,302"
         exit 1
     fi
     
@@ -129,6 +134,14 @@ check_args() {
                 ;;
             -fs|--filter-size)
                 FILTER_SIZE="$2"
+                shift 2
+                ;;
+            -fkb|--filter-kb)
+                FILTER_KB="$2"
+                shift 2
+                ;;
+            -fb|--filter-bytes)
+                FILTER_BYTES="$2"
                 shift 2
                 ;;
             -p|--proxy)
@@ -161,8 +174,8 @@ check_args() {
     
     # Creează numele fișierului de log
     local start_date=$(date '+%d-%m-%Y_%H-%M')
-    LOG_FILE="directory-bruteforce-${TARGET_DOMAIN}-${start_date}.txt"
-    STATS_FILE="/tmp/.bruteforce_stats_$"
+    LOG_FILE="/home/<user>/logs-${TARGET_DOMAIN}-${start_date}.txt"
+    STATS_FILE="/tmp/.bruteforce_stats_$$"
     
     # Inițializează fișierul de statistici
     echo "0 0 0 0 0 0 0" > "$STATS_FILE"
@@ -188,7 +201,15 @@ check_args() {
     fi
     
     if [ -n "$FILTER_SIZE" ]; then
-        echo -e "${BLUE}📏 Filter size: $FILTER_SIZE bytes${NC}"
+        echo -e "${BLUE}📏 Filter size (bytes): $FILTER_SIZE bytes${NC}"
+    fi
+    
+    if [ -n "$FILTER_BYTES" ]; then
+        echo -e "${BLUE}📏 Filter bytes: $FILTER_BYTES bytes${NC}"
+    fi
+    
+    if [ -n "$FILTER_KB" ]; then
+        echo -e "${BLUE}📏 Filter KB: $FILTER_KB KB${NC}"
     fi
     
     echo ""
@@ -246,7 +267,7 @@ parse_proxy() {
     fi
 }
 
-# Funcție pentru verificarea filtrelor
+# Funcție pentru verificarea filtrelor cu suport îmbunătățit pentru size
 should_filter() {
     local http_code=$1
     local file_size=$2
@@ -255,15 +276,42 @@ should_filter() {
     if [ -n "$FILTER_CODES" ]; then
         IFS=',' read -ra CODES <<< "$FILTER_CODES"
         for code in "${CODES[@]}"; do
+            # Clean up whitespace
+            code=$(echo "$code" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             if [ "$http_code" = "$code" ]; then
                 return 0  # Filtrează (nu afișa)
             fi
         done
     fi
     
-    # Verifică filtrul pentru mărime
+    # Verifică filtrul pentru mărime în bytes (old -fs flag)
     if [ -n "$FILTER_SIZE" ] && [ "$file_size" = "$FILTER_SIZE" ]; then
         return 0  # Filtrează (nu afișa)
+    fi
+    
+    # Verifică filtrul pentru mărime în bytes (new -fb flag)
+    if [ -n "$FILTER_BYTES" ] && [ "$file_size" = "$FILTER_BYTES" ]; then
+        return 0  # Filtrează (nu afișa)
+    fi
+    
+    # Verifică filtrul pentru mărime în KB
+    if [ -n "$FILTER_KB" ]; then
+        # Convert file size to KB for comparison
+        local file_size_kb
+        if [ "$file_size" -gt 0 ]; then
+            file_size_kb=$((file_size / 1024))
+        else
+            file_size_kb=0
+        fi
+        
+        IFS=',' read -ra KB_SIZES <<< "$FILTER_KB"
+        for kb_size in "${KB_SIZES[@]}"; do
+            # Clean up whitespace
+            kb_size=$(echo "$kb_size" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            if [ "$file_size_kb" = "$kb_size" ]; then
+                return 0  # Filtrează (nu afișa)
+            fi
+        done
     fi
     
     return 1  # Nu filtra (afișează)
