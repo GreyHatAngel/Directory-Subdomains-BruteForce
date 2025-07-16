@@ -1,26 +1,57 @@
 #!/bin/bash
 
-read -p "Introduce URL-ul de scanat (ex: https://exemplu.ro/path): " BASE_URL
+read -p "Insert a target (ex: https://exemplu.ro/path): " BASE_URL
 BASE_URL="${BASE_URL%/}"
 
+read -p "Status filtering (ex: 301,404): " FILTER_CODES_INPUT
+IFS=',' read -ra FILTER_CODES <<< "$FILTER_CODES_INPUT"
+
+read -p "Extensions (ex: php,ini,txt) sau lasă gol: " EXT_INPUT
+IFS=',' read -ra EXTRA_EXTS <<< "$EXT_INPUT"
+
 WORDLIST=(
-  "logo.svgz"
-  "https.php"
-  "test.php"
-  "info.txt"
-  "test-image.svg"
-  "test.txt"
-  "file.php"
-  "perf.php"
-  "mock.php"
-  "test.json"
-  "test.js"
-  "data.xml"
-  "debug.php"
-  "settings.php"
-  "index.php"
-  "testfile.php.bak"
+  "logo"
+  "https"
+  "test"
+  "info"
+  "test-image"
+  "file"
+  "perf"
+  "mock"
+  "debug"
+  "settings"
+  "index"
+  "testfile"
 )
+
+EXTENDED_WORDLIST=()
+
+if [[ ${#EXTRA_EXTS[@]} -gt 0 ]]; then
+  for word in "${WORDLIST[@]}"; do
+    for ext in "${EXTRA_EXTS[@]}"; do
+      EXTENDED_WORDLIST+=("${word}.${ext}")
+    done
+  done
+else
+  EXTENDED_WORDLIST=(
+    "logo.svgz"
+    "https.php"
+    "test.php"
+    "info.txt"
+    "test-image.svg"
+    "test.txt"
+    "file.php"
+    "perf.php"
+    "mock.php"
+    "test.json"
+    "test.js"
+    "data.xml"
+    "debug.php"
+    "settings.php"
+    "index.php"
+    "testfile.php.bak"
+  )
+fi
 
 USER_AGENTS=(
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
@@ -29,7 +60,6 @@ USER_AGENTS=(
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0"
 )
 
-# Colors
 GREEN_BOLD="\e[1;32m"
 YELLOW="\e[1;33m"
 RED="\e[1;31m"
@@ -51,7 +81,7 @@ echo "[Scan started at $TIMESTAMP]" >> "$LOGFILE"
 echo "[Source IP: $MY_IP]" >> "$LOGFILE"
 echo >> "$LOGFILE"
 
-for FILE in "${WORDLIST[@]}"; do
+for FILE in "${EXTENDED_WORDLIST[@]}"; do
   URL="$BASE_URL/$FILE"
   REQUEST_TIME=$(date +"%H:%M:%S - %Y-%m-%d")
   UA=${USER_AGENTS[$RANDOM % ${#USER_AGENTS[@]}]}
@@ -60,12 +90,13 @@ for FILE in "${WORDLIST[@]}"; do
   CURRENT_URL="$URL"
   MAX_HOPS=5
   HOPS=0
+  FINAL_STATUS=""
+  FINAL_LENGTH=""
 
   while true; do
     HEADERS=$(curl -s -A "$UA" -D - -o /dev/null "$CURRENT_URL")
     STATUS=$(echo "$HEADERS" | grep HTTP | tail -n1 | awk '{print $2}')
     LOCATION=$(echo "$HEADERS" | grep -i ^Location: | awk '{print $2}' | tr -d '\r')
-
     REDIRECT_CHAIN+=("[$STATUS] $CURRENT_URL")
 
     if [[ "$STATUS" =~ ^30[12]$ && -n "$LOCATION" && $HOPS -lt $MAX_HOPS ]]; then
@@ -85,6 +116,7 @@ for FILE in "${WORDLIST[@]}"; do
     REDIRECT_CHAIN+=("[$FINAL_STATUS] $CURRENT_URL")
   fi
 
+  DISPLAY=true
   COLOR_OUTPUT="${BLUE}$FILE${RESET} "
   OUTPUT_LINE="[$MY_IP] [$REQUEST_TIME] $FILE"
 
@@ -93,14 +125,16 @@ for FILE in "${WORDLIST[@]}"; do
     STATUS=$(echo "$ENTRY" | grep -oP "\[\K[0-9]+(?=\])")
     URL_PATH=$(echo "$ENTRY" | cut -d']' -f2- | xargs)
 
-    if [[ "$i" -eq 0 && "$STATUS" =~ ^30[12]$ ]]; then
-      COLOR_OUTPUT+="${YELLOW}[$STATUS]${RESET} $URL_PATH"
-      OUTPUT_LINE+=" [$STATUS] $URL_PATH"
-    elif [[ "$i" -eq 0 ]]; then
+    for FILTER in "${FILTER_CODES[@]}"; do
+      [[ "$STATUS" == "$FILTER" ]] && DISPLAY=false
+    done
+
+    if [[ "$i" -eq 0 ]]; then
       case "$STATUS" in
         200) COLOR=$GREEN_BOLD ;;
         403) COLOR=$MAGENTA ;;
         404) COLOR=$RED ;;
+        30[1-3]) COLOR=$YELLOW ;;
         *) COLOR=$RESET ;;
       esac
       COLOR_OUTPUT+="${COLOR}[$STATUS]${RESET} $URL_PATH"
@@ -116,6 +150,6 @@ for FILE in "${WORDLIST[@]}"; do
     OUTPUT_LINE+=" (${FINAL_LENGTH} bytes)"
   fi
 
-  echo -e "$COLOR_OUTPUT"
+  [[ "$DISPLAY" == true ]] && echo -e "$COLOR_OUTPUT"
   echo "$OUTPUT_LINE" >> "$LOGFILE"
 done
