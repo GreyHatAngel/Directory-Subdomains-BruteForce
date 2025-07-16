@@ -6,7 +6,7 @@ BASE_URL="${BASE_URL%/}"
 read -p "Status filtering (ex: 301,404): " FILTER_CODES_INPUT
 IFS=',' read -ra FILTER_CODES <<< "$FILTER_CODES_INPUT"
 
-read -p "Extensions (ex: php,ini,txt) sau lasă gol: " EXT_INPUT
+read -p "Extensions (ex: php,ini,txt): " EXT_INPUT
 IFS=',' read -ra EXTRA_EXTS <<< "$EXT_INPUT"
 
 WORDLIST=(
